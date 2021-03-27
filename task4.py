@@ -1,74 +1,80 @@
 import cv2
 import numpy as np
 
-PYRAMIDS_DEPTH = 6
-
 FOREGROUND = 'car.png'
 BACKGROUND = 'road.jpg'
 
-WHITE = [255, 255, 255]
+WHITE = [1, 1, 1]
 BLACK = [0, 0, 0]
+
+NUM_LEVELS = 6
+
+
+def gaussian_pyramid(img):
+    lower = img.copy()
+    gaussian_pyr = [lower]
+    for i in range(NUM_LEVELS):
+        lower = cv2.pyrDown(lower)
+        gaussian_pyr.append(np.uint8(lower))
+    return gaussian_pyr
+
+
+def laplacian_pyramid(gaussian_pyr):
+    laplacian_top = gaussian_pyr[-1]
+    num_levels = len(gaussian_pyr) - 1
+
+    laplacian_pyr = [laplacian_top]
+    for i in range(num_levels, 0, -1):
+        size = (gaussian_pyr[i - 1].shape[1], gaussian_pyr[i - 1].shape[0])
+        gaussian_expanded = cv2.pyrUp(gaussian_pyr[i], dstsize=size)
+        laplacian = cv2.subtract(gaussian_pyr[i - 1], gaussian_expanded)
+        laplacian_pyr.append(laplacian)
+    return laplacian_pyr
+
+
+def blend(laplacian_A, laplacian_B, mask_pyr):
+    LS = []
+    for la, lb, mask in zip(laplacian_A, laplacian_B, mask_pyr):
+        beta_mask = (1 - mask)
+        ls = cv2.add(cv2.multiply(lb, mask), cv2.multiply(la, beta_mask))
+        LS.append(ls)
+    return LS
+
+
+def reconstruct(laplacian_pyr):
+    laplacian_top = laplacian_pyr[0]
+    laplacian_lst = [laplacian_top]
+    num_levels = len(laplacian_pyr) - 1
+    for i in range(num_levels):
+        size = (laplacian_pyr[i + 1].shape[1], laplacian_pyr[i + 1].shape[0])
+        laplacian_expanded = cv2.pyrUp(laplacian_top, dstsize=size)
+        laplacian_top = cv2.add(laplacian_pyr[i + 1], laplacian_expanded)
+        laplacian_lst.append(laplacian_top)
+    return laplacian_lst
 
 
 def make_mask(input_image):
-    copy_image = np.copy(input_image)
-    for i in range(len(copy_image)):
-        for j in range(len(copy_image[i])):
-            copy_image[i][j] = WHITE if copy_image[i][j].any() else BLACK
-    return copy_image
+    m = np.zeros(np.shape(input_image), dtype='uint8')
+    for i in range(len(input_image)):
+        for j in range(len(input_image[i])):
+            m[i][j] = WHITE if input_image[i][j].any() else BLACK
+    return m
 
 
 if __name__ == '__main__':
-    A = cv2.imread(FOREGROUND)
-    B = cv2.imread(BACKGROUND)
-    m = make_mask(A)
+    img1 = cv2.imread(BACKGROUND)
+    img2 = cv2.imread(FOREGROUND)
+    mask = make_mask(img2)
 
-    # assume mask is float32 [0,1]
+    gaussian_pyr_1 = gaussian_pyramid(img1)
+    laplacian_pyr_1 = laplacian_pyramid(gaussian_pyr_1)
+    gaussian_pyr_2 = gaussian_pyramid(img2)
+    laplacian_pyr_2 = laplacian_pyramid(gaussian_pyr_2)
+    mask_pyr_final = gaussian_pyramid(mask)
+    mask_pyr_final.reverse()
 
-    # generate Gaussian pyramid for A,B and mask
-    GA = A.copy()
-    GB = B.copy()
-    GM = m.copy()
-    gpA = [GA]
-    gpB = [GB]
-    gpM = [GM]
-    for i in range(PYRAMIDS_DEPTH):
-        GA = cv2.pyrDown(GA)
-        GB = cv2.pyrDown(GB)
-        GM = cv2.pyrDown(GM)
-        gpA.append(np.float32(GA))
-        gpB.append(np.float32(GB))
-        gpM.append(np.float32(GM))
+    add_laplace = blend(laplacian_pyr_1, laplacian_pyr_2, mask_pyr_final)
+    final = reconstruct(add_laplace)
 
-    # generate Laplacian Pyramids for A,B and masks
-    lpA = [gpA[PYRAMIDS_DEPTH - 1]]  # the bottom of the Lap-pyr holds the last (smallest) Gauss level
-    lpB = [gpB[PYRAMIDS_DEPTH - 1]]
-    gpMr = [gpM[PYRAMIDS_DEPTH - 1]]
-    for i in range(PYRAMIDS_DEPTH - 1, 0, -1):
-        # Laplacian: subtarct upscaled version of lower level from current level
-        # to get the high frequencies
-        temp = cv2.pyrUp(gpA[i])
-        LA = np.subtract(gpA[i - 1], cv2.pyrUp(gpA[i]))
-        LB = np.subtract(gpB[i - 1], cv2.pyrUp(gpB[i]))
-        lpA.append(LA)
-        lpB.append(LB)
-        gpMr.append(gpM[i - 1])  # also reverse the masks
-
-    # Now blend images according to mask in each level
-    LS = []
-    for la, lb, gm in zip(lpA, lpB, gpMr):
-        ls = la * gm + lb * (1.0 - gm)
-        LS.append(ls)
-
-    # now reconstruct
-    ls_ = LS[0]
-    for i in range(1, PYRAMIDS_DEPTH):
-        ls_ = cv2.pyrUp(ls_)
-        ls_ = cv2.add(ls_, LS[i])
-
-    cv2.imshow('Foreground', A)
-    cv2.imshow('Background', B)
-    cv2.imshow('Mask', m)
-    cv2.imshow('Laplacian_pyramid_blending', ls_)
-
+    cv2.imshow('Final', final[NUM_LEVELS])
     cv2.waitKey(0)
